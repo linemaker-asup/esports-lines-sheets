@@ -3,6 +3,7 @@ Gumloop Run Code Node: Esports Lines to Google Sheets
 
 Fetches esports lines from Underdog Fantasy and PrizePicks,
 formats them for Google Sheets output with opening line tracking.
+Automatically removes lines for matches that have already started.
 
 INPUTS (from Google Sheets Reader - existing sheet data):
   - existing_event:       list of existing Event values
@@ -231,6 +232,16 @@ def extract_map_and_stat(stat_str):
     return map_display, core_stat
 
 
+def parse_scheduled_time(scheduled):
+    """Parse a scheduled time string into a timezone-aware datetime, or None."""
+    if not scheduled:
+        return None
+    try:
+        return datetime.fromisoformat(scheduled.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def format_event(game, match, scheduled):
     """
     Format event string: "LoL - FlyQuest vs. LYON - 2/21/2026, 2:00 PM MST"
@@ -325,45 +336,53 @@ def build_sheet_rows(ud_lines, pp_lines):
 
     Each unique Event+Player+Map+Stat gets one row.
     Both platforms' values go on the same row when they match.
+    Rows for matches that have already started are excluded.
     """
-    # Index all lines by normalized key
+    now = datetime.now(timezone.utc)
     all_lines = ud_lines + pp_lines
     rows_by_key = {}
+    skipped_started = 0
 
     for line in all_lines:
-        map_display, core_stat = extract_map_and_stat(line["stat"])
-        event = format_event(line["game"], line.get("match", ""), line.get("scheduled", ""))
-        norm_key = f"{normalize_name(line['player'])}||{normalize_stat_for_matching(line['stat'])}||{line['game']}"
+        # Skip lines for matches that have already started
+        scheduled_dt = parse_scheduled_time(line.get("scheduled", ""))
+        if scheduled_dt and scheduled_dt <= now:
+            skipped_started += 1
+            continue
+
+        map_display, core_stat = extract_map_and_stat(line.get("stat", ""))
+        event = format_event(line.get("game", ""), line.get("match", ""), line.get("scheduled", ""))
+        norm_key = f"{normalize_name(line.get('player', ''))}||{normalize_stat_for_matching(line.get('stat', ''))}||{line.get('game', '')}"
 
         if norm_key not in rows_by_key:
             rows_by_key[norm_key] = {
                 "event": event,
-                "player": line["player"],
+                "player": line.get("player", ""),
                 "map": map_display,
                 "stat": core_stat,
                 "prizepicks": "",
                 "underdog": "",
-                "game": line["game"],  # for sorting
+                "game": line.get("game", ""),
             }
 
         row = rows_by_key[norm_key]
 
-        if line["platform"] == "Underdog":
+        if line.get("platform") == "Underdog":
             row["underdog"] = format_line_cell(
-                line["line"],
+                line.get("line", ""),
                 higher=line.get("higher_price"),
                 lower=line.get("lower_price"),
             )
-        elif line["platform"] == "PrizePicks":
-            row["prizepicks"] = format_line_cell(line["line"])
+        elif line.get("platform") == "PrizePicks":
+            row["prizepicks"] = format_line_cell(line.get("line", ""))
 
-    # Sort by event, player, map, stat
-    sorted_rows = sorted(
+    if skipped_started:
+        print(f"[Filter] Skipped {skipped_started} lines for matches already started")
+
+    return sorted(
         rows_by_key.values(),
         key=lambda r: (r["event"], r["player"], r.get("map", ""), r["stat"]),
     )
-
-    return sorted_rows
 
 
 # ---------------------------------------------------------------
@@ -374,32 +393,47 @@ def merge_with_opening_lines(new_rows, existing_data):
     Merge new live data with existing opening line data.
 
     For each row:
-    - If the row existed before, keep the original opening value
-      and update the live value.
-    - If the row is new, set opening = live.
+    - If the row existed before, ALWAYS keep the original opening value
+      (the oldest known value from the very first time the row appeared).
+    - If the row is new, set opening = current live value.
     """
-    # Build lookup from existing data
     existing_lookup = {}
+
     if existing_data:
-        for i in range(len(existing_data.get("event", []))):
+        events = existing_data.get("event", [])
+        players = existing_data.get("player", [])
+        maps = existing_data.get("map", [])
+        stats = existing_data.get("stat", [])
+        pp_openings = existing_data.get("pp_opening", [])
+        ud_openings = existing_data.get("ud_opening", [])
+
+        row_count = max(
+            len(events),
+            len(players),
+            len(maps),
+            len(stats),
+            len(pp_openings),
+            len(ud_openings),
+        )
+
+        for i in range(row_count):
             key = (
-                existing_data["event"][i] if i < len(existing_data.get("event", [])) else "",
-                existing_data["player"][i] if i < len(existing_data.get("player", [])) else "",
-                existing_data["map"][i] if i < len(existing_data.get("map", [])) else "",
-                existing_data["stat"][i] if i < len(existing_data.get("stat", [])) else "",
+                events[i] if i < len(events) else "",
+                players[i] if i < len(players) else "",
+                maps[i] if i < len(maps) else "",
+                stats[i] if i < len(stats) else "",
             )
             existing_lookup[key] = {
-                "pp_opening": existing_data["pp_opening"][i] if i < len(existing_data.get("pp_opening", [])) else "",
-                "ud_opening": existing_data["ud_opening"][i] if i < len(existing_data.get("ud_opening", [])) else "",
+                "pp_opening": pp_openings[i] if i < len(pp_openings) else "",
+                "ud_opening": ud_openings[i] if i < len(ud_openings) else "",
             }
 
-    # Merge
     for row in new_rows:
         key = (row["event"], row["player"], row["map"], row["stat"])
         existing = existing_lookup.get(key)
 
         if existing:
-            # Keep opening lines from existing data
+            # Always preserve the oldest known opening value
             row["prizepicks_opening"] = existing["pp_opening"] if existing["pp_opening"] else row["prizepicks"]
             row["underdog_opening"] = existing["ud_opening"] if existing["ud_opening"] else row["underdog"]
         else:
@@ -418,7 +452,7 @@ def merge_with_opening_lines(new_rows, existing_data):
 ud_lines = fetch_underdog()
 pp_lines = fetch_prizepicks()
 
-# Build rows in the new format
+# Build rows (automatically filters out started matches)
 new_rows = build_sheet_rows(ud_lines, pp_lines)
 
 # Build existing data from inputs (from Google Sheets Reader node)

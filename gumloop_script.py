@@ -14,9 +14,6 @@ INPUTS (from Google Sheets Reader - existing sheet data):
   - existing_pp_opening:  list of existing PrizePicks Opening values
   - existing_ud:          list of existing Underdog values
   - existing_ud_opening:  list of existing Underdog Opening values
-  - service_account_json: (optional) Google service account JSON key string
-                          for clearing the sheet automatically
-
 OUTPUTS (to Google Sheets Writer):
   - event, player, map_col, stat, prizepicks, prizepicks_opening,
     underdog, underdog_opening, betr, parlayplay, dabble, bovada, mybookie
@@ -37,7 +34,21 @@ TARGET_SPORTS = {"LOL", "CS", "DOTA2", "ESPORTS"}
 
 # Google Sheet config for auto-clearing
 SPREADSHEET_ID = "10TCKqNaIShIErBlI75sp1YIsU84_ZUPNuqO_ykhLKWc"
-SHEET_NAME = "Lines"  # Change this to match your sheet tab name
+SHEET_NAME = "Live Lines"
+
+SERVICE_ACCOUNT_INFO = {
+    "type": "service_account",
+    "project_id": "serious-mariner-436817-r1",
+    "private_key_id": "2b9a2a7bfe88c7fd12eaffca510bab2331bfcbf8",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC5ExxUqXQcsZTA\nTqDJDUWONXNJ74hxRqXK8z3pNaXlvQSxHI0LOnko8bCvU6sP7NyDcLf5JmuxaMA0\nz84pehN+aB51R0nkfnwk+X7r4Tc3QSnVXFVKA2eWF71+LdjrNAKImq1u94lFVl6v\nQHl+qnnWzR6DiCZ1kYi+TSEi1JH/PuUcs8pANJaWNCSfvJ6+TZRaUIY3eV50ihk4\nanysG8br8F66TGf9TivKvCkU317KAsHCmxj0MKAZatxxR0uZWX2h2cdidEw6WVGJ\n8hXk17gUBY2Sk/m2L7TSsTpiJZNR/5+DKF/m00dN2zni+MX7mgFaKqHeDmmq6V2M\nooDdAgDPAgMBAAECggEAMMKWs72DcG3e7X2pwd6jxTBS5BdeQM3mr14/oPo375vJ\nqSoHBP7OXhmzPbYS+xqiDGU9q0BSnkalYSSgwe++RA8Fe0uhbbhfV9R9+oJ3LDEY\nZvSxKdNUzsgJbj2BCZLF2hy6deJ0wZZcUtrvR459lDitgeT0kQQbXVvvz3/myTLj\niD5sKnv8LzMcmt+TBr343rPGJyC13Yhq7y/TmZy3se3D2sVhG800bey9R8gKsu/g\nzFeWpOHJWE8I/2dlovZdNbhqtuRJWcCMnDWvi9aEZ38f7oVBnncxfbsusLNdkZ9r\nHpLZlVhsU3/E/qIXBD+BFmwc6kM6D9Yd40CbPqDHvQKBgQDlumveLGcYdIgYOQk2\nJhsoolJMSJ1o8ldR07P+aBByxtq9MqjchIVCMD33WsaBGKw0ln5jIAj+Jcv0SJye\nhKXGczXgPVPVOrs59avPK2t/uOaHp8u6q3gMFu/6JUvaSNnBsleDsfNxFOQgeH9l\nrDu5+uEgSS//6WkheAq8O2XhfQKBgQDOPWak0M6w7nMrfCUApFb9CX3ciwNLJlCh\n36gqqwYRdBwbHPlp5vSDdmcqcmY5FyKPJ+GCN+4aU2TEnQxOrQVgdhoCznds7GOi\nN42hxdqN+mpjAonp/KhI53P/yBtJ3hmDMmVwyzbE0yxVY+AILy/w+tmi0RWIaJOy\nzB8afrF9OwKBgBvuLm80ttQiVumbBaOvvl2SXq8npPu9eyBXvOqRfG53/uBB6IXn\nFsyVUPNh9gB8H3PFWFh07KL5tXJd4azkM8OM/l/lFOw318uUMu9dOBSvRlf37q0j\na9UMdODU6AQCF3eVV06LtC1rfND11YdnCVvzRKvIOi3DEyUeky+PiTOBAoGABJ0H\nAMTS+s46sUxTn5INiBeAQ0Cw0CuJPjW8k0fEGPvZ7RlW0vGhopcxc5efhcNouH8R\n4lHR97DJ3kQNFG12Y1QA/PMVZNBc4jIP7wB4BRkG7DQQVbWbJhZXV+9n/N0FARRN\nhJpnHTwED9zuFADKN7/Ewomey7BbLXK3d2ZCHiUCgYAytlJ3tPD1+Pdnu0ZtAgHA\niL93zxlCnzbl9NhImznuhljGJVqZdZVa8O0T4EqzaYHJZHrxgrq4m81ArB4ehWHF\ntndLd35YRc2afubiOcSgyIx/uMrdlP5kGO6ABxeOasig2MW9CyNA/14FEkHn/fHk\nIbCwnIsaK4epV8m4Ei9iXg==\n-----END PRIVATE KEY-----\n",
+    "client_email": "gumloop-sheets@serious-mariner-436817-r1.iam.gserviceaccount.com",
+    "client_id": "102925815886774729057",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/gumloop-sheets%40serious-mariner-436817-r1.iam.gserviceaccount.com",
+    "universe_domain": "googleapis.com",
+}
 
 GAME_LABELS = {
     "LOL": "LoL",
@@ -394,10 +405,10 @@ def build_sheet_rows(ud_lines, pp_lines):
 # ---------------------------------------------------------------
 # Google Sheets clearing
 # ---------------------------------------------------------------
-def clear_sheet_data(sa_json_str):
+def clear_sheet_data():
     """
     Clear all data rows (except the header) from the Google Sheet
-    using the Sheets API and a service account.
+    using the Sheets API and the hardcoded service account.
     """
     try:
         from google.oauth2.service_account import Credentials
@@ -417,9 +428,8 @@ def clear_sheet_data(sa_json_str):
             return False
 
     try:
-        creds_info = json.loads(sa_json_str) if isinstance(sa_json_str, str) else sa_json_str
         creds = Credentials.from_service_account_info(
-            creds_info,
+            SERVICE_ACCOUNT_INFO,
             scopes=["https://www.googleapis.com/auth/spreadsheets"],
         )
         creds.refresh(AuthRequest())
@@ -537,13 +547,7 @@ except NameError:
 final_rows = merge_with_opening_lines(new_rows, existing_data)
 
 # Clear the sheet before the Writer appends new rows
-try:
-    sa_json = service_account_json
-    if sa_json:
-        clear_sheet_data(sa_json)
-except NameError:
-    # service_account_json input not connected; skip clearing
-    pass
+clear_sheet_data()
 
 print(f"\nTotal rows: {len(final_rows)}")
 print(f"  With PrizePicks: {sum(1 for r in final_rows if r['prizepicks'])}")

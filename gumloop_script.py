@@ -14,6 +14,8 @@ INPUTS (from Google Sheets Reader - existing sheet data):
   - existing_pp_opening:  list of existing PrizePicks Opening values
   - existing_ud:          list of existing Underdog values
   - existing_ud_opening:  list of existing Underdog Opening values
+  - service_account_json: (optional) Google service account JSON key string
+                          for clearing the sheet automatically
 
 OUTPUTS (to Google Sheets Writer):
   - event, player, map_col, stat, prizepicks, prizepicks_opening,
@@ -32,6 +34,10 @@ from datetime import datetime, timezone, timedelta
 UNDERDOG_URL = "https://api.underdogfantasy.com/beta/v5/over_under_lines"
 PP_PROXY_URL = "https://pp-python.vercel.app/api/prizepicks"
 TARGET_SPORTS = {"LOL", "CS", "DOTA2", "ESPORTS"}
+
+# Google Sheet config for auto-clearing
+SPREADSHEET_ID = "10TCKqNaIShIErBlI75sp1YIsU84_ZUPNuqO_ykhLKWc"
+SHEET_NAME = "Lines"  # Change this to match your sheet tab name
 
 GAME_LABELS = {
     "LOL": "LoL",
@@ -386,6 +392,62 @@ def build_sheet_rows(ud_lines, pp_lines):
 
 
 # ---------------------------------------------------------------
+# Google Sheets clearing
+# ---------------------------------------------------------------
+def clear_sheet_data(sa_json_str):
+    """
+    Clear all data rows (except the header) from the Google Sheet
+    using the Sheets API and a service account.
+    """
+    try:
+        from google.oauth2.service_account import Credentials
+        from google.auth.transport.requests import Request as AuthRequest
+    except ImportError:
+        try:
+            import subprocess
+            subprocess.check_call(
+                ["pip", "install", "google-auth"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            from google.oauth2.service_account import Credentials
+            from google.auth.transport.requests import Request as AuthRequest
+        except Exception as e:
+            print(f"[Clear] Could not install google-auth: {e}")
+            return False
+
+    try:
+        creds_info = json.loads(sa_json_str) if isinstance(sa_json_str, str) else sa_json_str
+        creds = Credentials.from_service_account_info(
+            creds_info,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        )
+        creds.refresh(AuthRequest())
+
+        # Clear everything below the header row
+        range_to_clear = f"{SHEET_NAME}!A2:Z"
+        url = (
+            f"https://sheets.googleapis.com/v4/spreadsheets/"
+            f"{SPREADSHEET_ID}/values/{range_to_clear}:clear"
+        )
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {creds.token}",
+                     "Content-Type": "application/json"},
+            json={},
+        )
+        if resp.status_code == 200:
+            print("[Clear] Cleared existing data rows from sheet")
+            return True
+        else:
+            print(f"[Clear] Error {resp.status_code}: {resp.text}")
+            return False
+    except Exception as e:
+        print(f"[Clear] Error clearing sheet: {e}")
+        return False
+
+
+# ---------------------------------------------------------------
 # Opening line tracking
 # ---------------------------------------------------------------
 def merge_with_opening_lines(new_rows, existing_data):
@@ -473,6 +535,15 @@ except NameError:
 
 # Merge with opening line data
 final_rows = merge_with_opening_lines(new_rows, existing_data)
+
+# Clear the sheet before the Writer appends new rows
+try:
+    sa_json = service_account_json
+    if sa_json:
+        clear_sheet_data(sa_json)
+except NameError:
+    # service_account_json input not connected; skip clearing
+    pass
 
 print(f"\nTotal rows: {len(final_rows)}")
 print(f"  With PrizePicks: {sum(1 for r in final_rows if r['prizepicks'])}")

@@ -1,7 +1,7 @@
 """
 Gumloop Run Code Node: Esports Lines to Google Sheets
 
-Fetches esports lines from Underdog Fantasy and PrizePicks,
+Fetches esports lines from Underdog Fantasy, PrizePicks, and ParlayPlay,
 formats them for Google Sheets output with opening line tracking.
 Automatically removes lines for matches that have already started.
 
@@ -22,6 +22,10 @@ OUTPUTS (to Google Sheets Writer):
 import requests
 import re
 import json
+import time
+import os
+import subprocess
+import sys
 from datetime import datetime, timezone, timedelta
 
 
@@ -202,6 +206,226 @@ def fetch_prizepicks():
 
 
 # ---------------------------------------------------------------
+# Fetch ParlayPlay lines (via Selenium headless scraper)
+# ---------------------------------------------------------------
+
+# Map ParlayPlay league names to internal game codes
+PLP_LEAGUE_MAP = {
+    "valorant": "VAL",
+    "lol": "LOL",
+    "league of legends": "LOL",
+    "cs2": "CS2",
+    "counter-strike": "CS2",
+    "dota 2": "DOTA2",
+    "dota2": "DOTA2",
+    "call of duty": "COD",
+    "cod": "COD",
+}
+
+
+def _plp_extract_api_data(driver, logs):
+    """Extract crossgame/search API response bodies from Chrome performance logs."""
+    data = {}
+    for entry in logs:
+        try:
+            msg = json.loads(entry["message"])["message"]
+            if msg["method"] == "Network.responseReceived":
+                url = msg["params"]["response"]["url"]
+                status = msg["params"]["response"]["status"]
+                if "crossgame/search" in url and status == 200:
+                    request_id = msg["params"]["requestId"]
+                    try:
+                        body = driver.execute_cdp_cmd(
+                            "Network.getResponseBody", {"requestId": request_id}
+                        )
+                        parsed = json.loads(body["body"])
+                        data[url] = parsed
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return data
+
+
+def _plp_normalize_players(player_entry):
+    """
+    Normalize a ParlayPlay player entry into standard line format(s).
+
+    Each entry contains nested match/player/stats objects.  The API returns
+    FG (Full Game) period data, so we determine the stat prefix from the
+    match type (best_of_3 -> "Maps 1-3", etc.).
+
+    Returns a list of dicts (one per stat in the entry).
+    """
+    results = []
+    try:
+        match = player_entry.get("match", {})
+        sport = match.get("sport", {})
+        league = match.get("league", {})
+
+        # Only keep eSports entries
+        if sport.get("sportName") != "eSports":
+            return results
+
+        league_short = league.get("leagueNameShort", "")
+        game = PLP_LEAGUE_MAP.get(league_short.lower(), "ESPORTS")
+
+        player_info = player_entry.get("player", {})
+        player_name = player_info.get("fullName", "")
+        team_abbr = player_info.get("team", {}).get("teamAbbreviation", "")
+
+        home = match.get("homeTeam", {}).get("teamname", "")
+        away = match.get("awayTeam", {}).get("teamname", "")
+        match_title = f"{home} vs {away}" if home and away else ""
+        match_date = match.get("matchDate", "")
+
+        # FG period: determine map prefix from match type
+        match_type = match.get("matchType", "")
+        if match_type == "best_of_5":
+            prefix = "Maps 1-5 "
+        elif match_type == "best_of_3":
+            prefix = "Maps 1-3 "
+        elif match_type == "best_of_2":
+            prefix = "Maps 1-2 "
+        else:
+            prefix = ""
+
+        for stat in player_entry.get("stats", []):
+            stat_name = stat.get("challengeName", "")
+            line_val = stat.get("statValue")
+            multiplier = stat.get("defaultMultiplier")
+
+            if not stat_name or line_val is None:
+                continue
+
+            full_stat = f"{prefix}{stat_name}"
+
+            results.append({
+                "platform": "ParlayPlay",
+                "game": game,
+                "player": player_name,
+                "team": team_abbr,
+                "match": match_title,
+                "scheduled": match_date,
+                "stat": full_stat,
+                "line": float(line_val),
+                "over_multiplier": multiplier,
+                "under_multiplier": None,
+            })
+    except Exception:
+        pass
+    return results
+
+
+def fetch_parlayplay():
+    """
+    Fetch esports lines from ParlayPlay using Selenium headless browser.
+
+    ParlayPlay's API is behind Cloudflare protection, so direct HTTP requests
+    are blocked.  This function:
+      1. Loads parlayplay.io in headless Chrome to pass Cloudflare.
+      2. Intercepts API responses from Chrome performance logs.
+      3. Normalises eSports player entries into our standard line format.
+
+    The page automatically fetches ``period=FG`` (Full Game) data on load.
+    We map that to the appropriate stat prefix based on match type
+    (e.g. best_of_3 -> "Maps 1-3 Kills").
+
+    Returns an empty list gracefully if Selenium/Chrome are not available.
+    """
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+    except ImportError:
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "selenium"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+        except Exception:
+            print("[ParlayPlay] Selenium not available, skipping")
+            return []
+
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1400,900")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-infobars")
+    options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+
+    # Try to find Chrome binary
+    for path in ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]:
+        if os.path.exists(path):
+            options.binary_location = path
+            break
+
+    try:
+        driver = webdriver.Chrome(options=options)
+    except Exception as e:
+        print(f"[ParlayPlay] Chrome/ChromeDriver not available: {e}")
+        return []
+
+    all_players = []
+
+    try:
+        # Load homepage – this passes Cloudflare and triggers
+        # the initial sport=All&period=FG API call automatically.
+        driver.get("https://parlayplay.io")
+        time.sleep(8)
+
+        title = driver.title
+        if "moment" in title.lower() or "challenge" in title.lower():
+            time.sleep(10)
+            title = driver.title
+
+        if "ParlayPlay" not in title:
+            print(f"[ParlayPlay] Page blocked by Cloudflare: {title}")
+            return []
+
+        # Extract API responses from performance logs
+        logs = driver.get_log("performance")
+        all_data = _plp_extract_api_data(driver, logs)
+
+        # Parse all captured API data
+        for url, data in all_data.items():
+            if isinstance(data, dict) and "players" in data:
+                for p in data["players"]:
+                    entries = _plp_normalize_players(p)
+                    all_players.extend(entries)
+
+        # Deduplicate
+        seen = set()
+        deduped = []
+        for p in all_players:
+            key = f"{p['game']}||{p['player']}||{p['stat']}||{p['line']}"
+            if key not in seen:
+                seen.add(key)
+                deduped.append(p)
+
+        print(f"[ParlayPlay] {len(all_players)} raw, {len(deduped)} deduped lines")
+        return deduped
+
+    except Exception as e:
+        print(f"[ParlayPlay] Error during scraping: {e}")
+        return []
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------
 def extract_map_and_stat(stat_str):
@@ -345,18 +569,44 @@ def normalize_stat_for_matching(stat):
 # ---------------------------------------------------------------
 # Build rows in the target format
 # ---------------------------------------------------------------
-def build_sheet_rows(ud_lines, pp_lines):
+def format_multiplier_cell(line_val, over_mult=None, under_mult=None):
+    """
+    Format a ParlayPlay line value with multipliers for display.
+    ParlayPlay uses payout multipliers (e.g., 1.5x) instead of American odds.
+    Examples: "3.5 (1.5x/1.8x)", "14 (1.2x)"
+    """
+    if line_val is None or line_val == "":
+        return ""
+
+    if isinstance(line_val, float) and line_val == int(line_val):
+        val_str = str(int(line_val))
+    else:
+        val_str = str(line_val)
+
+    over_str = f"{over_mult}x" if over_mult else ""
+    under_str = f"{under_mult}x" if under_mult else ""
+
+    if over_str and under_str:
+        return f"{val_str} ({over_str}/{under_str})"
+    elif over_str:
+        return f"{val_str} ({over_str})"
+    elif under_str:
+        return f"{val_str} ({under_str})"
+    return val_str
+
+
+def build_sheet_rows(ud_lines, pp_lines, plp_lines=None):
     """
     Build rows in the format:
     Event | Player | Map | Stat | PrizePicks | PrizePicks Opening |
     Underdog | Underdog Opening | Betr | ParlayPlay | Dabble | Bovada | MyBookie
 
     Each unique Event+Player+Map+Stat gets one row.
-    Both platforms' values go on the same row when they match.
+    All platforms' values go on the same row when they match.
     Rows for matches that have already started are excluded.
     """
     now = datetime.now(timezone.utc)
-    all_lines = ud_lines + pp_lines
+    all_lines = ud_lines + pp_lines + (plp_lines or [])
     rows_by_key = {}
     skipped_started = 0
 
@@ -379,6 +629,7 @@ def build_sheet_rows(ud_lines, pp_lines):
                 "stat": core_stat,
                 "prizepicks": "",
                 "underdog": "",
+                "parlayplay": "",
                 "game": line.get("game", ""),
             }
 
@@ -392,6 +643,12 @@ def build_sheet_rows(ud_lines, pp_lines):
             )
         elif line.get("platform") == "PrizePicks":
             row["prizepicks"] = format_line_cell(line.get("line", ""))
+        elif line.get("platform") == "ParlayPlay":
+            row["parlayplay"] = format_multiplier_cell(
+                line.get("line", ""),
+                over_mult=line.get("over_multiplier"),
+                under_mult=line.get("under_multiplier"),
+            )
 
     if skipped_started:
         print(f"[Filter] Skipped {skipped_started} lines for matches already started")
@@ -520,12 +777,13 @@ def merge_with_opening_lines(new_rows, existing_data):
 # Main execution
 # ---------------------------------------------------------------
 
-# Fetch live data from both platforms
+# Fetch live data from all platforms
 ud_lines = fetch_underdog()
 pp_lines = fetch_prizepicks()
+plp_lines = fetch_parlayplay()
 
 # Build rows (automatically filters out started matches)
-new_rows = build_sheet_rows(ud_lines, pp_lines)
+new_rows = build_sheet_rows(ud_lines, pp_lines, plp_lines)
 
 # Build existing data from inputs (from Google Sheets Reader node)
 # These variables are provided by Gumloop when the node has inputs connected.
@@ -550,8 +808,9 @@ final_rows = merge_with_opening_lines(new_rows, existing_data)
 clear_sheet_data()
 
 print(f"\nTotal rows: {len(final_rows)}")
-print(f"  With PrizePicks: {sum(1 for r in final_rows if r['prizepicks'])}")
-print(f"  With Underdog:   {sum(1 for r in final_rows if r['underdog'])}")
+print(f"  With PrizePicks:  {sum(1 for r in final_rows if r['prizepicks'])}")
+print(f"  With Underdog:    {sum(1 for r in final_rows if r['underdog'])}")
+print(f"  With ParlayPlay:  {sum(1 for r in final_rows if r.get('parlayplay'))}")
 
 # ---------------------------------------------------------------
 # Output lists for Google Sheets Writer node
@@ -565,7 +824,7 @@ prizepicks_opening = [r.get("prizepicks_opening", "") for r in final_rows]
 underdog = [r["underdog"] for r in final_rows]
 underdog_opening = [r.get("underdog_opening", "") for r in final_rows]
 betr = [""] * len(final_rows)
-parlayplay = [""] * len(final_rows)
+parlayplay = [r.get("parlayplay", "") for r in final_rows]
 dabble = [""] * len(final_rows)
 bovada = [""] * len(final_rows)
 mybookie = [""] * len(final_rows)
